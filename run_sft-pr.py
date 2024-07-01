@@ -24,24 +24,40 @@ import sys
 import datasets
 import torch
 import transformers
-from transformers import AutoModelForCausalLM, set_seed
+from transformers import AutoModelForCausalLM, set_seed, AutoTokenizer
 from datasets import load_dataset
 from alignment import (
     DataArguments,
     H4ArgumentParser,
     ModelArguments,
     SFTConfig,
-    #apply_chat_template,
-    #decontaminate_humaneval,
     get_checkpoint,
-    #get_datasets,
     get_kbit_device_map,
     get_peft_config,
     get_quantization_config,
     get_tokenizer,
 )
 from trl import SFTTrainer, setup_chat_format
+from peft import (
+    LoraConfig,
+    get_peft_model,
+    prepare_model_for_kbit_training,
+    set_peft_model_state_dict,
+)
+import bitsandbytes as bnb
+def find_all_linear_names(model):
+    #cls = bnb.nn.Linear8bitLt 
+    cls = bnb.nn.Linear4bit 
+    lora_module_names = set()
+    for name, module in model.named_modules():
+        if isinstance(module, cls):
+            names = name.split('.')
+            lora_module_names.add(names[0] if len(names) == 1 else names[-1])
 
+
+    if 'lm_head' in lora_module_names: # needed for 16-bit
+        lora_module_names.remove('lm_head')
+    return list(lora_module_names)
 
 logger = logging.getLogger(__name__)
 
@@ -93,12 +109,7 @@ def main():
         raw_datasets = load_dataset("json", data_files=data_path)
     else:
         raw_datasets = load_dataset(data_path)
-    # raw_datasets = get_datasets(
-    #     data_args,
-    #     splits=data_args.dataset_splits,
-    #     configs=data_args.dataset_configs,
-    #     columns_to_keep=["messages", "chosen", "rejected", "prompt", "completion", "label"],
-    # )
+
     logger.info(
         f"Training on the following datasets and their proportions: {[split + ' : ' + str(dset.num_rows) for split, dset in raw_datasets.items()]}"
     )
@@ -107,7 +118,11 @@ def main():
     ################
     # Load tokenizer
     ################
-    tokenizer = get_tokenizer(model_args, data_args)
+    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path,trust_remote_code=True)
+    if model_args.model_name_or_path.find("qwen") != -1 or model_args.model_name_or_path.find("Qwen") != -1:
+        tokenizer.add_special_tokens({"bos_token": "<|im_start|>"})
+        tokenizer.add_special_tokens({"eos_token": "<|im_end|>"})
+        tokenizer.add_special_tokens({"pad_token": "<|endoftext|>"})
 
     #######################
     # Load pretrained model
@@ -129,12 +144,8 @@ def main():
     )
 
     model = model_args.model_name_or_path
-    # For ChatML we need to add special tokens and resize the embedding layer
-    #if "<|im_start|>" in tokenizer.chat_template and "gemma-tokenizer-chatml" not in tokenizer.name_or_path:
     model = AutoModelForCausalLM.from_pretrained(model_args.model_name_or_path, **model_kwargs)
-    #model, tokenizer = setup_chat_format(model, tokenizer)
     model_kwargs = None
-
     #####################
     # Apply chat template
     #####################
@@ -149,25 +160,11 @@ def main():
         desc="Applying chat template",
     )
 
-    ##########################
-    # Decontaminate benchmarks
-    ##########################
-    num_raw_train_samples = len(raw_datasets["train"])
-    #raw_datasets = raw_datasets.filter(decontaminate_humaneval, batched=True, batch_size=10_000, num_proc=1)
-    num_filtered_train_samples = num_raw_train_samples - len(raw_datasets["train"])
-    logger.info(
-        f"Decontaminated {num_filtered_train_samples} ({num_filtered_train_samples/num_raw_train_samples * 100:.2f}%) samples from the training set."
-    )
-
     train_dataset = raw_datasets["train"]
     try:
         eval_dataset = raw_datasets["test"]
     except:
         eval_dataset = None
-    with training_args.main_process_first(desc="Log a few random samples from the processed training set"):
-        for index in random.sample(range(len(raw_datasets["train"])), 3):
-            logger.info(f"Sample {index} of the processed training set:\n\n{raw_datasets['train'][index]['text']}")
-
     ########################
     # Initialize the Trainer
     ########################
@@ -180,8 +177,8 @@ def main():
         dataset_text_field="text",
         max_seq_length=training_args.max_seq_length,
         tokenizer=tokenizer,
-        packing=True,
         peft_config=get_peft_config(model_args),
+        packing=True,
         dataset_kwargs=training_args.dataset_kwargs,
     )
 
@@ -205,7 +202,9 @@ def main():
     # Save model and create model card
     ##################################
     logger.info("*** Save model ***")
-    #trainer.save_model(training_args.output_dir)
+    if trainer.is_fsdp_enabled:
+        trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
+    trainer.save_model(training_args.output_dir)
     model.save_pretrained(training_args.output_dir)
     logger.info(f"Model saved to {training_args.output_dir}")
 
