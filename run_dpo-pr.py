@@ -37,7 +37,7 @@ from alignment import (
     get_quantization_config,
     get_tokenizer,
 )
-from trl import SFTTrainer, setup_chat_format
+from trl import SFTTrainer, setup_chat_format,ORPOTrainer
 from peft import (
     LoraConfig,
     get_peft_model,
@@ -45,13 +45,13 @@ from peft import (
     set_peft_model_state_dict,
 )
 import bitsandbytes as bnb
-
+from alignment.configs import ORPOConfig
 
 logger = logging.getLogger(__name__)
 
 
 def main():
-    parser = H4ArgumentParser((ModelArguments, DataArguments, SFTConfig))
+    parser = H4ArgumentParser((ModelArguments, DataArguments, ORPOConfig))
     model_args, data_args, training_args = parser.parse()
 
     # Set seed for reproducibility
@@ -132,16 +132,16 @@ def main():
     )
 
     model = model_args.model_name_or_path
-    model = AutoModelForCausalLM.from_pretrained(model_args.model_name_or_path, **model_kwargs)
+    #model = AutoModelForCausalLM.from_pretrained(model_args.model_name_or_path, **model_kwargs)
     model_kwargs = None
     #####################
     # Apply chat template
     #####################
     def generate_and_tokenize_prompt(data_point):
         full_prompt = {}
-        full_prompt['prompt'] = data_point["prompt"]
-        full_prompt['chosen'] = data_point["chosen"]
-        full_prompt['rejected'] = data_point["rejected"]
+        full_prompt['text_prompt'] = data_point["prompt"]
+        full_prompt['text_chosen'] = data_point["chosen"]
+        full_prompt['text_rejected'] = data_point["rejected"]
         return full_prompt
     raw_datasets = raw_datasets.map(
         generate_and_tokenize_prompt,
@@ -160,11 +160,11 @@ def main():
     ########################
     trainer = ORPOTrainer(
         model=model,
-        model_init_kwargs=model_kwargs,
+        #model_init_kwargs=model_kwargs,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        max_seq_length=training_args.max_seq_length,
+        #max_seq_length=training_args.max_seq_length,
         tokenizer=tokenizer,
         peft_config=get_peft_config(model_args),
        # packing=True,
