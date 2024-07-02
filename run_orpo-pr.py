@@ -22,7 +22,7 @@ from typing import Any, Dict
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, set_seed
-
+from datasets import load_dataset
 from alignment import (
     DataArguments,
     H4ArgumentParser,
@@ -77,16 +77,14 @@ def main():
     ###############
     # Load datasets
     ###############
-    raw_datasets = get_datasets(
-        data_args,
-        splits=data_args.dataset_splits,
-        configs=data_args.dataset_configs,
-        columns_to_keep=[
-            "prompt",
-            "chosen",
-            "rejected",
-        ],
-    )
+    data_path = data_args.dataset_mixer.keys()
+    data_path_list = list(data_path)
+    data_path = ', '.join(data_path_list)
+    print(data_path)
+    if data_path.endswith(".json") or data_path.endswith(".jsonl"):
+        raw_datasets = load_dataset("json", data_files=data_path)
+    else:
+        raw_datasets = load_dataset(data_path)
     logger.info(
         f"Training on the following splits: {[split + ' : ' + str(dset.num_rows) for split, dset in raw_datasets.items()]}"
     )
@@ -117,21 +115,26 @@ def main():
     # For ChatML we need to add special tokens and resize the embedding layer
     if "<|im_start|>" in tokenizer.chat_template:
         model, tokenizer = setup_chat_format(model, tokenizer)
-
+    if model_args.model_name_or_path.find("qwen") != -1 or model_args.model_name_or_path.find("Qwen") != -1:
+        tokenizer.add_special_tokens({"bos_token": "<|im_start|>"})
+        tokenizer.add_special_tokens({"eos_token": "<|im_end|>"})
+        tokenizer.add_special_tokens({"pad_token": "<|endoftext|>"})
     #####################
     # Apply chat template
     #####################
+    def generate_and_tokenize_prompt(data_point):
+        full_prompt = {}
+        full_prompt['text_prompt'] = data_point["prompt"]
+        full_prompt['text_chosen'] = data_point["chosen"]
+        full_prompt['text_rejected'] = data_point["rejected"]
+        return full_prompt
     raw_datasets = raw_datasets.map(
-        apply_chat_template,
-        fn_kwargs={
-            "tokenizer": tokenizer,
-            "task": "orpo",
-            "auto_insert_empty_system_msg": data_args.auto_insert_empty_system_msg,
-        },
+        generate_and_tokenize_prompt,
         num_proc=data_args.preprocessing_num_workers,
         remove_columns=column_names,
-        desc="Formatting comparisons with prompt template",
+        desc="Applying chat template",
     )
+
 
     #############################
     # Filter out seq > max_length
@@ -166,22 +169,7 @@ def main():
                 f"Filtered out {filtered_test_samples} test samples out of the {unfiltered_test_samples} samples."
             )
 
-    ##########################
-    # Decontaminate benchmarks
-    ##########################
-    num_raw_train_samples = len(raw_datasets["train"])
-    raw_datasets = raw_datasets.filter(
-        decontaminate_humaneval,
-        fn_kwargs={"text_column": "text_chosen"},
-        batched=True,
-        batch_size=10_000,
-        num_proc=1,
-        desc="Decontaminating HumanEval samples",
-    )
-    num_filtered_train_samples = num_raw_train_samples - len(raw_datasets["train"])
-    logger.info(
-        f"Decontaminated {num_filtered_train_samples} ({num_filtered_train_samples/num_raw_train_samples * 100:.2f}%) samples from the training set."
-    )
+    
 
     # Replace column names with what TRL needs, text_prompt -> prompt, text_chosen -> chosen and text_rejected -> rejected
     for split in raw_datasets.keys():

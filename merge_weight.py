@@ -15,7 +15,7 @@ def find_all_linear_names(model):
         lora_module_names.remove('lm_head')
     return list(lora_module_names)
 tensors = {}
-with safe_open("/work/jcxy/haolu/workspace/alignment-handbook/data/seed_Prometheus_sft_dialog/model.safetensors", framework="pt", device=0) as f:
+with safe_open("data/Qwen2-7B-Instruct-seed_Prometheus_dpo_dialog_safe/model.safetensors", framework="pt", device=0) as f:
     for k in f.keys():
         tensors[k] = f.get_tensor(k) # loads the full tensor given a key
         #print(k, tensors[k].dtype, tensors[k].shape) # Uncomment to view
@@ -31,7 +31,7 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_compute_dtype=torch.bfloat16
 )
 model = AutoModelForCausalLM.from_pretrained(
-    "/work/jcxy/LLaMA-Factory/model/Qwen2-72B-Instruct",
+    "/work/jcxy/LLaMA-Factory/model/Qwen2-7B-Instruct",
     use_cache=False,
     quantization_config=bnb_config
 )
@@ -43,13 +43,13 @@ modules = find_all_linear_names(model)
 print(modules)
 # Add LoRA (make sure your rank (r) and alpha (lora_alpha) values match those used in training!)
 peft_config = LoraConfig(
-    task_type=TaskType.CAUSAL_LM, r=16, lora_alpha=16, lora_dropout=0.05,bias="none",
+    task_type=TaskType.CAUSAL_LM, r=32, lora_alpha=32, lora_dropout=0.05,bias="none",
     target_modules=modules
 )
 model = get_peft_model(model, peft_config)
 
 # Check out the first few keys in the state dict:
-list(model.state_dict().keys())[:10]
+print(list(model.state_dict().keys())[:10])
 new_sd = model.state_dict()
 for k in new_sd:
     if 'lora' in k:
@@ -58,4 +58,4 @@ for k in new_sd:
 
 model.load_state_dict(new_sd)
 
-model.save_pretrained("seed_Prometheus_sft_dialog")
+model.save_pretrained("data/Qwen2-7B-Instruct-seed_Prometheus_dpo_dialog_peft")
