@@ -28,7 +28,7 @@ from alignment import (
     H4ArgumentParser,
     ModelArguments,
     apply_chat_template,
-    decontaminate_humaneval,
+    #decontaminate_humaneval,
     get_checkpoint,
     get_datasets,
     get_kbit_device_map,
@@ -136,52 +136,52 @@ def main():
     #############################
     # Filter out seq > max_length
     #############################
-    if training_args.max_prompt_length is not None:
-        unfiltered_train_samples = len(raw_datasets["train"])
-        if "test" in raw_datasets:
-            unfiltered_test_samples = len(raw_datasets["test"])
+    # if training_args.max_prompt_length is not None:
+    #     unfiltered_train_samples = len(raw_datasets["train"])
+    #     if "test" in raw_datasets:
+    #         unfiltered_test_samples = len(raw_datasets["test"])
 
-        def filter_fn(sample: Dict[str, Any]) -> Dict[str, Any]:
-            prompt_length = tokenizer(
-                sample["text_prompt"],
-                return_tensors="pt",
-            )[
-                "input_ids"
-            ].size(dim=-1)
+    #     def filter_fn(sample: Dict[str, Any]) -> Dict[str, Any]:
+    #         prompt_length = tokenizer(
+    #             sample["text_prompt"],
+    #             return_tensors="pt",
+    #         )[
+    #             "input_ids"
+    #         ].size(dim=-1)
 
-            return prompt_length < training_args.max_prompt_length
+    #         return prompt_length < training_args.max_prompt_length
 
-        raw_datasets = raw_datasets.filter(
-            filter_fn,
-            desc="Filtering out the samples where len(text_prompt) > max_prompt_length",
-        )
+    #     raw_datasets = raw_datasets.filter(
+    #         filter_fn,
+    #         desc="Filtering out the samples where len(text_prompt) > max_prompt_length",
+    #     )
 
-        filtered_train_samples = unfiltered_train_samples - len(raw_datasets["train"])
-        logger.info(
-            f"Filtered out {filtered_train_samples} training samples out of the {unfiltered_train_samples} samples."
-        )
-        if "test" in raw_datasets:
-            filtered_test_samples = unfiltered_test_samples - len(raw_datasets["test"])
-            logger.info(
-                f"Filtered out {filtered_test_samples} test samples out of the {unfiltered_test_samples} samples."
-            )
+    #     filtered_train_samples = unfiltered_train_samples - len(raw_datasets["train"])
+    #     logger.info(
+    #         f"Filtered out {filtered_train_samples} training samples out of the {unfiltered_train_samples} samples."
+    #     )
+    #     if "test" in raw_datasets:
+    #         filtered_test_samples = unfiltered_test_samples - len(raw_datasets["test"])
+    #         logger.info(
+    #             f"Filtered out {filtered_test_samples} test samples out of the {unfiltered_test_samples} samples."
+    #         )
 
     ##########################
     # Decontaminate benchmarks
     ##########################
     num_raw_train_samples = len(raw_datasets["train"])
-    raw_datasets = raw_datasets.filter(
-        decontaminate_humaneval,
-        fn_kwargs={"text_column": "text_chosen"},
-        batched=True,
-        batch_size=10_000,
-        num_proc=1,
-        desc="Decontaminating HumanEval samples",
-    )
-    num_filtered_train_samples = num_raw_train_samples - len(raw_datasets["train"])
-    logger.info(
-        f"Decontaminated {num_filtered_train_samples} ({num_filtered_train_samples/num_raw_train_samples * 100:.2f}%) samples from the training set."
-    )
+    # raw_datasets = raw_datasets.filter(
+    #     decontaminate_humaneval,
+    #     fn_kwargs={"text_column": "text_chosen"},
+    #     batched=True,
+    #     batch_size=10_000,
+    #     num_proc=1,
+    #     desc="Decontaminating HumanEval samples",
+    # )
+    # num_filtered_train_samples = num_raw_train_samples - len(raw_datasets["train"])
+    # logger.info(
+    #     f"Decontaminated {num_filtered_train_samples} ({num_filtered_train_samples/num_raw_train_samples * 100:.2f}%) samples from the training set."
+    # )
 
     # Replace column names with what TRL needs, text_prompt -> prompt, text_chosen -> chosen and text_rejected -> rejected
     for split in raw_datasets.keys():

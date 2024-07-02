@@ -16,7 +16,7 @@
 """
 Supervised fine-tuning script for decoder language models.
 """
-
+from typing import Dict, Any
 import logging
 import random
 import sys
@@ -130,18 +130,17 @@ def main():
         device_map=get_kbit_device_map() if quantization_config is not None else None,
         quantization_config=quantization_config,
     )
-
+    #training_args.model_init_kwargs = model_kwargs
     model = model_args.model_name_or_path
     #model = AutoModelForCausalLM.from_pretrained(model_args.model_name_or_path, **model_kwargs)
-    model_kwargs = None
     #####################
     # Apply chat template
     #####################
     def generate_and_tokenize_prompt(data_point):
         full_prompt = {}
-        full_prompt['text_prompt'] = data_point["prompt"]
-        full_prompt['text_chosen'] = data_point["chosen"]
-        full_prompt['text_rejected'] = data_point["rejected"]
+        full_prompt['prompt'] = data_point["prompt"]
+        full_prompt['chosen'] = data_point["chosen"]
+        full_prompt['rejected'] = data_point["rejected"]
         return full_prompt
     raw_datasets = raw_datasets.map(
         generate_and_tokenize_prompt,
@@ -150,6 +149,47 @@ def main():
         desc="Applying chat template",
     )
 
+    
+    #############################
+    # Filter out seq > max_length
+    #############################
+    if training_args.max_length is not None:
+        unfiltered_train_samples = len(raw_datasets["train"])
+        if "test" in raw_datasets:
+            unfiltered_test_samples = len(raw_datasets["test"])
+
+        def filter_fn(sample: Dict[str, Any]) -> Dict[str, Any]:
+            prompt_length = tokenizer(
+                sample["prompt"]+sample["chosen"],
+                return_tensors="pt",
+            )[
+                "input_ids"
+            ].size(dim=-1)
+
+            return prompt_length < training_args.max_length
+        def filter_fn2(sample: Dict[str, Any]) -> Dict[str, Any]:
+            prompt_length = tokenizer(
+                sample["prompt"]+sample["rejected"],
+                return_tensors="pt",
+            )[
+                "input_ids"
+            ].size(dim=-1)
+
+            return prompt_length < training_args.max_length
+
+        raw_datasets = raw_datasets.filter(
+            filter_fn,
+            desc="Filtering out the samples where len(text_prompt) > max_prompt_length",
+        )
+        raw_datasets = raw_datasets.filter(
+            filter_fn2,
+            desc="Filtering out the samples where len(text_prompt) > max_prompt_length",
+        )
+
+        filtered_train_samples = unfiltered_train_samples - len(raw_datasets["train"])
+        logger.info(
+            f"Filtered out {filtered_train_samples} training samples out of the {unfiltered_train_samples} samples."
+        )
     train_dataset = raw_datasets["train"]
     try:
         eval_dataset = raw_datasets["test"]
@@ -159,7 +199,7 @@ def main():
     # Initialize the Trainer
     ########################
     trainer = ORPOTrainer(
-        model=model,
+        model,
         #model_init_kwargs=model_kwargs,
         args=training_args,
         train_dataset=train_dataset,
