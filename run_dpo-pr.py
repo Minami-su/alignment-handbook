@@ -199,8 +199,8 @@ def main():
     # Initialize the Trainer
     ########################
     trainer = ORPOTrainer(
-        model,
-        #model_init_kwargs=model_kwargs,
+        model=model,
+        model_init_kwargs=model_kwargs,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,

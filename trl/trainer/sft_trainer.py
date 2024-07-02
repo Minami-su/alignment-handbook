@@ -123,7 +123,7 @@ class SFTTrainer(Trainer):
     """
 
     _tag_names = ["trl", "sft"]
-
+###################modify code####################################
     def __init__(
         self,
         model: Optional[Union[PreTrainedModel, nn.Module, str]] = None,
@@ -233,7 +233,7 @@ class SFTTrainer(Trainer):
                     and not is_sharded_qlora
                 ):
                     peft_module_casting_to_bf16(model)
-
+###################modify code####################################
         if tokenizer is None:
             tokenizer = AutoTokenizer.from_pretrained(model.config._name_or_path)
             if getattr(tokenizer, "pad_token", None) is None:

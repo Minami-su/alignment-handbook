@@ -49,7 +49,7 @@ from .utils import (
 
 
 if is_peft_available():
-    from peft import PeftModel, get_peft_model, prepare_model_for_kbit_training
+    from peft import PeftConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
 
 if is_wandb_available():
@@ -93,7 +93,7 @@ class ORPOTrainer(Trainer):
     """
 
     _tag_names = ["trl", "orpo"]
-
+###################modify code####################################
     def __init__(
         self,
         model: Optional[Union[PreTrainedModel, nn.Module, str]] = None,
@@ -106,21 +106,16 @@ class ORPOTrainer(Trainer):
         callbacks: Optional[List[TrainerCallback]] = None,
         optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None),
         preprocess_logits_for_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
-        peft_config: Optional[Dict] = None,
+        #peft_config: Optional[Dict] = None,
+        peft_config: Optional["PeftConfig"] = None,
         model_init_kwargs: Optional[Dict] = None,
         compute_metrics: Optional[Callable[[EvalLoopOutput], Dict]] = None,
     ):
-        if args.model_init_kwargs is None:
+        if model_init_kwargs is None:
             model_init_kwargs = {}
         elif not isinstance(model, str):
             raise ValueError("You passed model_kwargs to the ORPOTrainer. But your model is already instantiated.")
-        else:
-            model_init_kwargs = args.model_init_kwargs
-            model_init_kwargs["torch_dtype"] = (
-                model_init_kwargs["torch_dtype"]
-                if model_init_kwargs["torch_dtype"] in ["auto", None]
-                else getattr(torch, model_init_kwargs["torch_dtype"])
-            )
+
 
         if isinstance(model, str):
             warnings.warn(
@@ -129,63 +124,83 @@ class ORPOTrainer(Trainer):
             )
             model = AutoModelForCausalLM.from_pretrained(model, **model_init_kwargs)
 
+        self._peft_has_been_casted_to_bf16 = False
         # Initialize this variable to False. This helps tracking the case when `peft_module_casting_to_bf16`
         # has been called in order to properly call autocast if needed.
-        self._peft_has_been_casted_to_bf16 = False
+        if is_peft_available() and peft_config is not None:
+            if not isinstance(peft_config, PeftConfig):
+                raise ValueError(
+                    "If you want to use the PeftModel, you need to pass a PeftConfig object to the ORPOTrainer."
+                    f" and you passed a {type(peft_config)}."
+                )
 
-        if not is_peft_available() and peft_config is not None:
-            raise ValueError(
-                "PEFT is not installed and you passed a `peft_config` in the trainer's kwargs, please install it to use the PEFT models"
-            )
-        elif is_peft_available() and peft_config is not None:
-            # if model is a peft model and we have a peft_config, we merge and unload it first
-            if isinstance(model, PeftModel):
-                model = model.merge_and_unload()
-
-            if getattr(model, "is_loaded_in_8bit", False) or getattr(model, "is_loaded_in_4bit", False):
+            if not isinstance(model, PeftModel):
                 _support_gc_kwargs = hasattr(
                     args, "gradient_checkpointing_kwargs"
                 ) and "gradient_checkpointing_kwargs" in list(
                     inspect.signature(prepare_model_for_kbit_training).parameters
                 )
+                gradient_checkpointing_kwargs = getattr(args, "gradient_checkpointing_kwargs", None) or {}
+                is_sharded_qlora = False
+                # Below is to support QLoRA + FSDP / DS-Zero3 - one should never call
+                # peft_module_casting_to_bf16 or prepare_model_for_kbit_training when doing
+                # QLoRA + FSDP / DS-Zero3
+                if getattr(model, "is_loaded_in_4bit", False):
+                    for _, param in model.named_parameters():
+                        if param.__class__.__name__ == "Params4bit":
+                            is_sharded_qlora = param.data.device.type == "cpu"
+                            break
+                if getattr(model, "is_loaded_in_8bit", False) or (
+                    getattr(model, "is_loaded_in_4bit", False) and not is_sharded_qlora
+                ):
+                    prepare_model_kwargs = {
+                        "use_gradient_checkpointing": getattr(args, "gradient_checkpointing", False)
+                    }
 
-                prepare_model_kwargs = {"use_gradient_checkpointing": args.gradient_checkpointing}
+                    if _support_gc_kwargs:
+                        prepare_model_kwargs["gradient_checkpointing_kwargs"] = gradient_checkpointing_kwargs
 
-                if _support_gc_kwargs:
-                    prepare_model_kwargs["gradient_checkpointing_kwargs"] = args.gradient_checkpointing_kwargs
+                    model = prepare_model_for_kbit_training(model, **prepare_model_kwargs)
 
-                model = prepare_model_for_kbit_training(model, **prepare_model_kwargs)
-            elif getattr(args, "gradient_checkpointing", False):
-                # For backward compatibility with older versions of transformers
-                if hasattr(model, "enable_input_require_grads"):
-                    model.enable_input_require_grads()
-                else:
+                    if args is not None:
+                        args = dataclasses.replace(args, gradient_checkpointing=False)
+                elif getattr(args, "gradient_checkpointing", False) and (
+                    "use_reentrant" not in gradient_checkpointing_kwargs
+                    or gradient_checkpointing_kwargs["use_reentrant"]
+                ):
+                    # For backward compatibility with older versions of transformers
+                    if hasattr(model, "enable_input_require_grads"):
+                        model.enable_input_require_grads()
+                    else:
 
-                    def make_inputs_require_grad(module, input, output):
-                        output.requires_grad_(True)
+                        def make_inputs_require_grad(module, input, output):
+                            output.requires_grad_(True)
 
-                    model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+                        model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
-            # get peft model with the given config
-            model = get_peft_model(model, peft_config)
-            if args.bf16 and getattr(model, "is_loaded_in_4bit", False):
-                peft_module_casting_to_bf16(model)
-                # If args.bf16 we need to explicitly call `generate` with torch amp autocast context manager
-                self._peft_has_been_casted_to_bf16 = True
+                model = get_peft_model(model, peft_config)
+                if (
+                    args is not None
+                    and args.bf16
+                    and getattr(model, "is_loaded_in_4bit", False)
+                    and not is_sharded_qlora
+                ):
+                    peft_module_casting_to_bf16(model)
+                    self._peft_has_been_casted_to_bf16 = True
+###################modify code####################################
+        # # For models that use gradient_checkpointing, we need to attach a hook that enables input
+        # # to explicitly have `requires_grad=True`, otherwise training will either silently
+        # # fail or completely fail.
+        # elif getattr(args, "gradient_checkpointing", False):
+        #     # For backward compatibility with older versions of transformers
+        #     if hasattr(model, "enable_input_require_grads"):
+        #         model.enable_input_require_grads()
+        #     else:
 
-        # For models that use gradient_checkpointing, we need to attach a hook that enables input
-        # to explicitly have `requires_grad=True`, otherwise training will either silently
-        # fail or completely fail.
-        elif getattr(args, "gradient_checkpointing", False):
-            # For backward compatibility with older versions of transformers
-            if hasattr(model, "enable_input_require_grads"):
-                model.enable_input_require_grads()
-            else:
+        #         def make_inputs_require_grad(module, input, output):
+        #             output.requires_grad_(True)
 
-                def make_inputs_require_grad(module, input, output):
-                    output.requires_grad_(True)
-
-                model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+        #         model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
         if args.generate_during_eval and not is_wandb_available():
             raise ValueError(
